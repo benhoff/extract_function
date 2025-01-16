@@ -2,6 +2,7 @@
 import sys
 import ast
 import curses
+import string
 
 def extract_function(file_path, function_name):
     # Read the source file
@@ -77,52 +78,99 @@ def get_function_names(file_path):
 
 def curses_select_function(function_names):
     """
-    Launch a simple TUI with curses to let the user select a function name
-    from the given list using up/down arrows. Press Enter to confirm choice.
-    Returns the chosen function name.
+    Launch a simple TUI with curses to let the user:
+      - See a list of all function_names
+      - Use the Up/Down arrow keys to move through the list
+      - Type alphanumerics (and underscores) to filter the list in real-time
+      - Press Enter to confirm choice
+
+    Returns the chosen function name (string) or None if no selection.
     """
     def main(stdscr):
         curses.curs_set(0)  # Hide the cursor
         current_row = 0
+        search_query = ""  # the text the user typed to filter the list
 
+        # Initialize curses color
         curses.start_color()
         curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
 
-        def print_menu(stdscr, current_idx):
+        # Start with all function names in the "filtered list"
+        filtered_functions = list(function_names)
+
+        def filter_list(query):
+            """Return all function names that contain 'query' (case-insensitive)."""
+            q_lower = query.lower()
+            return [fn for fn in function_names if q_lower in fn.lower()]
+
+        def print_menu(stdscr, selected_idx, filtered, query):
             stdscr.clear()
             h, w = stdscr.getmaxyx()
-            # Calculate a vertical start so the list is somewhat centered
-            start_y = max((h - len(function_names)) // 2, 0)
 
-            for idx, fn_name in enumerate(function_names):
-                # Center each function name horizontally
+            # Print a search prompt on the first line
+            search_str = f"Search: {query}"
+            stdscr.addstr(0, 0, search_str)
+
+            # Decide where to start printing the list
+            start_y = 2  # a couple lines down
+
+            for idx, fn_name in enumerate(filtered):
                 x = w // 2 - len(fn_name) // 2
                 y = start_y + idx
 
-                if idx == current_idx:
-                    # Highlight the current selection
+                if idx == selected_idx:
                     stdscr.attron(curses.color_pair(1))
                     stdscr.addstr(y, x, fn_name)
                     stdscr.attroff(curses.color_pair(1))
                 else:
                     stdscr.addstr(y, x, fn_name)
+
             stdscr.refresh()
 
-        print_menu(stdscr, current_row)
+        print_menu(stdscr, current_row, filtered_functions, search_query)
 
         while True:
             key = stdscr.getch()
 
-            if key == curses.KEY_UP and current_row > 0:
-                current_row -= 1
-            elif key == curses.KEY_DOWN and current_row < len(function_names) - 1:
-                current_row += 1
-            # ENTER keys can vary: 10, 13, KEY_ENTER
+            if key == curses.KEY_UP:
+                if current_row > 0:
+                    current_row -= 1
+            elif key == curses.KEY_DOWN:
+                if current_row < len(filtered_functions) - 1:
+                    current_row += 1
             elif key in [curses.KEY_ENTER, 10, 13]:
-                # Return the selected function name
-                return function_names[current_row]
+                # If there's at least one function in the list, return that name
+                if filtered_functions:
+                    return filtered_functions[current_row]
+                else:
+                    return None
 
-            print_menu(stdscr, current_row)
+            # Handle Backspace (different terminals send different codes)
+            elif key in [curses.KEY_BACKSPACE, 127, 8]:
+                if search_query:
+                    search_query = search_query[:-1]
+                    filtered_functions = filter_list(search_query)
+                    current_row = 0
+                    if current_row >= len(filtered_functions):
+                        current_row = max(0, len(filtered_functions) - 1)
+
+            # You could optionally handle Esc to cancel:
+            # elif key == 27:
+            #     return None
+
+            else:
+                # If it's a printable character, handle it as part of the search
+                # (We allow alphanumeric plus underscore in this example)
+                if 0 <= key < 256:
+                    ch = chr(key)
+                    if ch.isalnum() or ch == '_':
+                        search_query += ch
+                        filtered_functions = filter_list(search_query)
+                        current_row = 0
+                        if current_row >= len(filtered_functions):
+                            current_row = max(0, len(filtered_functions) - 1)
+
+            print_menu(stdscr, current_row, filtered_functions, search_query)
 
     return curses.wrapper(main)
 
@@ -140,7 +188,6 @@ def choose_function_from_file(file_path):
 
 
 if __name__ == '__main__':
-    # If no arguments given or just `python extract_function.py`, show usage
     if len(sys.argv) < 2:
         print("Usage:")
         print("  python extract_function.py <python_file> [function_name]")
@@ -149,7 +196,7 @@ if __name__ == '__main__':
     file_path = sys.argv[1]
 
     if len(sys.argv) == 2:
-        # Only file path given -> open TUI to choose function
+        # Only file path given -> open TUI with filtering
         function_name = choose_function_from_file(file_path)
     else:
         # Both file path and function name given -> extract directly
