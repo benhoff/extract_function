@@ -18,6 +18,7 @@ import sys
 import subprocess
 import os
 import curses  # for the TUI
+import string  # to check alphanumeric
 
 def usage():
     print(__doc__.strip())
@@ -79,7 +80,7 @@ def extract_function_body(cpp_file, start_line):
     brace_count = 0
     in_function = False
 
-    # Start from the line where the function signature is found,
+    # Start from the line where function signature is found,
     # and read until we close all braces.
     for idx in range(start_idx, len(file_content)):
         line = file_content[idx]
@@ -91,8 +92,6 @@ def extract_function_body(cpp_file, start_line):
         if '}' in line:
             brace_count -= line.count('}')
 
-        # When in_function is True and brace_count goes back to 0,
-        # we've reached the end of the function body.
         if in_function and brace_count == 0:
             break
 
@@ -100,26 +99,42 @@ def extract_function_body(cpp_file, start_line):
 
 def curses_select_function(function_names):
     """
-    Launch a simple TUI with curses to let the user select a single function name
+    Launch a TUI with curses to let the user select a single function name
     from the given list using the up/down arrows. Press Enter to confirm choice.
+    Additionally, as the user types alphanumeric characters, the list is filtered.
     Returns the chosen function name.
     """
     def main(stdscr):
         curses.curs_set(0)  # Hide the cursor
         current_row = 0
 
-        # Initialize color pair (foreground on background)
+        # The 'search_query' tracks what the user has typed to filter the list
+        search_query = ""
+
+        # We'll store the filtered list separately
+        filtered_names = list(function_names)
+
+        # Setup color pair (foreground on background)
         curses.start_color()
         curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
 
-        def print_menu(stdscr, selected_idx):
+        def get_filtered_list(query):
+            """Return all names that contain 'query' (case-insensitive)."""
+            query_lower = query.lower()
+            return [fn for fn in function_names if query_lower in fn.lower()]
+
+        def print_menu(stdscr, selected_idx, query, items):
             stdscr.clear()
             h, w = stdscr.getmaxyx()
 
-            # Center the list in the window
-            start_y = max((h - len(function_names)) // 2, 0)
+            # Show the current search query at the top (or somewhere visible)
+            search_str = f"Search: {query}"
+            stdscr.addstr(0, 0, search_str)
 
-            for idx, fname in enumerate(function_names):
+            # The list starts a few rows down
+            start_y = 2
+
+            for idx, fname in enumerate(items):
                 x = w // 2 - len(fname) // 2
                 y = start_y + idx
 
@@ -132,20 +147,55 @@ def curses_select_function(function_names):
 
             stdscr.refresh()
 
-        print_menu(stdscr, current_row)
+        print_menu(stdscr, current_row, search_query, filtered_names)
 
         while True:
             key = stdscr.getch()
 
-            if key == curses.KEY_UP and current_row > 0:
-                current_row -= 1
-            elif key == curses.KEY_DOWN and current_row < len(function_names) - 1:
-                current_row += 1
-            # ENTER can be curses.KEY_ENTER (on some terminals) or 10 or 13
-            elif key in [curses.KEY_ENTER, 10, 13]:
-                return function_names[current_row]
+            # Handle arrow keys
+            if key == curses.KEY_UP:
+                if current_row > 0:
+                    current_row -= 1
+            elif key == curses.KEY_DOWN:
+                if current_row < len(filtered_names) - 1:
+                    current_row += 1
 
-            print_menu(stdscr, current_row)
+            # Handle Enter
+            elif key in [curses.KEY_ENTER, 10, 13]:
+                if filtered_names:
+                    return filtered_names[current_row]
+                else:
+                    # If the user presses Enter but there's nothing to select
+                    return None
+
+            # Handle Backspace (varies by terminal; KEY_BACKSPACE or 127, etc.)
+            elif key in [curses.KEY_BACKSPACE, 127, 8]:
+                # Remove last character from search_query if present
+                if search_query:
+                    search_query = search_query[:-1]
+                    filtered_names = get_filtered_list(search_query)
+                    current_row = 0  # reset selection
+                    # If there's nothing in the filtered list, let's keep current_row at 0
+                    if current_row >= len(filtered_names):
+                        current_row = max(0, len(filtered_names) - 1)
+
+            # Handle Esc (27) to exit or anything else you wish
+            elif key == 27:  # Escape key
+                return None
+
+            # Otherwise, check if it's a valid alphanumeric (or underscore) character
+            elif 0 <= key <= 255:  # key is within ASCII range
+                ch = chr(key)
+                # Decide what counts as valid input for your search
+                if ch.isalnum() or ch == '_':
+                    search_query += ch
+                    filtered_names = get_filtered_list(search_query)
+                    current_row = 0
+                    if current_row >= len(filtered_names):
+                        current_row = max(0, len(filtered_names) - 1)
+
+            # Re-render menu after handling the key press
+            print_menu(stdscr, current_row, search_query, filtered_names)
 
     return curses.wrapper(main)
 
@@ -161,6 +211,10 @@ def choose_function_interactively(cpp_file, function_positions):
         sys.exit(1)
 
     chosen_function = curses_select_function(all_func_names)
+    if not chosen_function:
+        print("[Info] No function selected or TUI canceled.")
+        sys.exit(0)
+
     return [chosen_function]  # return list for consistency
 
 def process_functions(cpp_file, function_positions, function_names):
@@ -219,3 +273,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
