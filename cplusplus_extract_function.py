@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
 Usage:
-    extract_function <cpp_file> <function_name> [<function_name2> ...]
+    extract_function <cpp_file> [<function_name> [<function_name2> ...]]
 
 Description:
     - Uses `ctags` to locate all function definitions in <cpp_file>.
-    - For each <function_name> given, attempts to extract and print its body.
-    - If multiple definitions (e.g. overloads) exist for the same name, it prints each one.
+    - If one or more function names are provided, attempts to extract each one.
+    - If no function name is provided, opens a TUI to let you pick one function.
+    - If multiple definitions (e.g., overloads) exist for the same name, it prints each one.
     - If a function name is not found, an error is printed.
 
 Example:
@@ -16,6 +17,7 @@ Example:
 import sys
 import subprocess
 import os
+import curses  # for the TUI
 
 def usage():
     print(__doc__.strip())
@@ -48,7 +50,6 @@ def get_function_positions(cpp_file):
             continue
 
         name, kind, line_num_str, filename = parts[0], parts[1], parts[2], parts[3]
-
         if kind == 'function':
             try:
                 line_num = int(line_num_str)
@@ -78,7 +79,7 @@ def extract_function_body(cpp_file, start_line):
     brace_count = 0
     in_function = False
 
-    # Start from the line where function signature is found,
+    # Start from the line where the function signature is found,
     # and read until we close all braces.
     for idx in range(start_idx, len(file_content)):
         line = file_content[idx]
@@ -97,24 +98,75 @@ def extract_function_body(cpp_file, start_line):
 
     return lines
 
-def main():
-    if len(sys.argv) < 3:
-        usage()
+def curses_select_function(function_names):
+    """
+    Launch a simple TUI with curses to let the user select a single function name
+    from the given list using the up/down arrows. Press Enter to confirm choice.
+    Returns the chosen function name.
+    """
+    def main(stdscr):
+        curses.curs_set(0)  # Hide the cursor
+        current_row = 0
 
-    cpp_file = sys.argv[1]
-    function_names = sys.argv[2:]  # one or more function names
+        # Initialize color pair (foreground on background)
+        curses.start_color()
+        curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
 
-    if not os.path.isfile(cpp_file):
-        print(f"[Error] File not found: {cpp_file}")
+        def print_menu(stdscr, selected_idx):
+            stdscr.clear()
+            h, w = stdscr.getmaxyx()
+
+            # Center the list in the window
+            start_y = max((h - len(function_names)) // 2, 0)
+
+            for idx, fname in enumerate(function_names):
+                x = w // 2 - len(fname) // 2
+                y = start_y + idx
+
+                if idx == selected_idx:
+                    stdscr.attron(curses.color_pair(1))
+                    stdscr.addstr(y, x, fname)
+                    stdscr.attroff(curses.color_pair(1))
+                else:
+                    stdscr.addstr(y, x, fname)
+
+            stdscr.refresh()
+
+        print_menu(stdscr, current_row)
+
+        while True:
+            key = stdscr.getch()
+
+            if key == curses.KEY_UP and current_row > 0:
+                current_row -= 1
+            elif key == curses.KEY_DOWN and current_row < len(function_names) - 1:
+                current_row += 1
+            # ENTER can be curses.KEY_ENTER (on some terminals) or 10 or 13
+            elif key in [curses.KEY_ENTER, 10, 13]:
+                return function_names[current_row]
+
+            print_menu(stdscr, current_row)
+
+    return curses.wrapper(main)
+
+def choose_function_interactively(cpp_file, function_positions):
+    """
+    If the user didn't provide a function name, we open a TUI to
+    let them pick from all functions found in the file.
+    """
+    # Sort them alphabetically (you could also keep them in ctags order)
+    all_func_names = sorted(function_positions.keys())
+    if not all_func_names:
+        print(f"[Error] No functions found in '{cpp_file}'.")
         sys.exit(1)
 
-    # Get all function positions in the file
-    function_positions = get_function_positions(cpp_file)
-    if not function_positions:
-        print(f"[Error] Could not retrieve any functions from '{cpp_file}'.")
-        sys.exit(1)
+    chosen_function = curses_select_function(all_func_names)
+    return [chosen_function]  # return list for consistency
 
-    # For each function name specified, extract and print all matches
+def process_functions(cpp_file, function_positions, function_names):
+    """
+    For each function name, extract and print all positions (overloads).
+    """
     for fname in function_names:
         line_numbers = function_positions.get(fname, [])
         if not line_numbers:
@@ -137,6 +189,33 @@ def main():
                 print(line, end='')
 
             print("\n" + "-"*40 + "\n")  # delimiter between multiple functions
+
+def main():
+    # If at least <cpp_file> is not provided, show usage
+    if len(sys.argv) < 2:
+        usage()
+
+    cpp_file = sys.argv[1]
+
+    if not os.path.isfile(cpp_file):
+        print(f"[Error] File not found: {cpp_file}")
+        sys.exit(1)
+
+    # Gather all function positions from ctags
+    function_positions = get_function_positions(cpp_file)
+    if not function_positions:
+        print(f"[Error] Could not retrieve any functions from '{cpp_file}'.")
+        sys.exit(1)
+
+    # If only the file is provided, open the TUI to pick exactly one function
+    if len(sys.argv) == 2:
+        function_names = choose_function_interactively(cpp_file, function_positions)
+    else:
+        # Use the function names passed on the command line
+        function_names = sys.argv[2:]
+
+    # Extract and print the functions
+    process_functions(cpp_file, function_positions, function_names)
 
 if __name__ == "__main__":
     main()
